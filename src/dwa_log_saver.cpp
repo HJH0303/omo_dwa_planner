@@ -222,7 +222,9 @@ void DwaLogSaver::write_params_json_unlocked()
 
 void DwaLogSaver::write_run_data_json_unlocked()
 {
-  if (ticks_.empty()) return;
+  if (ticks_.empty()){
+    std::cout<<"hi"<<std::endl;
+    return;}
 
   std::ofstream ofs(run_dir_ + "/run_data.json");
   if (!ofs) return;
@@ -366,15 +368,19 @@ void DwaLogSaver::write_costmap_meta_unlocked()
 void DwaLogSaver::write_costmaps_unlocked()
 {
   if (cm_maps_.empty()) return;
+  const std::string subdir = run_dir_ + "/costmap";
+  if (!ensure_dir(subdir)) return;  // silently skip if cannot create
 
-  // Each snapshot as CSV: costmap_<k>.csv
   for (std::size_t k = 0; k < cm_maps_.size(); ++k) {
     const auto& cells = cm_maps_[k];
     const int W = cm_meta_.size_x;
     const int H = cm_meta_.size_y;
 
-    std::ofstream ofs(run_dir_ + "/costmap_" + std::to_string(k) + ".csv");
+    // filename: costmap_<k>.csv  (e.g., costmap_161.csv)
+    const std::string filename = subdir + "/costmap_" + std::to_string(k) + ".csv";
+    std::ofstream ofs(filename);
     if (!ofs) continue;
+
     // Row-major dump
     for (int r = 0; r < H; ++r) {
       for (int c = 0; c < W; ++c) {
