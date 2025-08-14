@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>omo_dwa_planner</name>
+  <version>0.1.0</version>
+  <description>Dynamic Window Approach local planner (C++ port of Python DWA)</description>
+
+  <!-- Fill with your info -->
+  <maintainer email="todo@example.com">TODO</maintainer>
+  <license>Apache-2.0</license>
+  <author email="todo@example.com">TODO</author>
+
+  <!-- Build tool -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Core ROS deps -->
+  <depend>rclcpp</depend>
+  <depend>message_filters</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>builtin_interfaces</depend>
+
+  <!-- Math / Eigen -->
+  <!-- eigen3_cmake_module gives CMake FindEigen3 on all platforms -->
+  <build_depend>eigen3_cmake_module</build_depend>
+  <build_export_depend>eigen3_cmake_module</build_export_depend>
+  <exec_depend>eigen3_cmake_module</exec_depend>
+  <!-- 'eigen' is the rosdep key mapping to system libeigen3-dev, etc. -->
+  <depend>eigen</depend>
+
+  <!-- Optional (uncomment if you use TF) -->
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <!-- Testing (optional) -->
+  <!-- <test_depend>ament_lint_auto</test_depend> -->
+  <!-- <test_depend>ament_lint_common</test_depend> -->
+  <!-- <test_depend>gtest</test_depend> -->
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
