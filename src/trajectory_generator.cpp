@@ -21,7 +21,7 @@ std::vector<VelPair> TrajectoryGenerator::sample_window(double v_now, double w_n
   const double ctrl_dt = 1.0 / std::max(1.0, cfg_.sim_period_hz);
   const double v_lo = clamp(v_now - cfg_.acc_lim_v * ctrl_dt, cfg_.v_min, cfg_.v_max);
   const double v_hi = clamp(v_now + cfg_.acc_lim_v * ctrl_dt, cfg_.v_min, cfg_.v_max);
-  const double w_center = clamp(w_now * 0.7, cfg_.w_min, cfg_.w_max);
+  const double w_center = clamp(w_now * 1.0, cfg_.w_min, cfg_.w_max); // limits the now_v now_w
   const double w_lo = clamp(w_center - cfg_.acc_lim_w * ctrl_dt, cfg_.w_min, cfg_.w_max);
   const double w_hi = clamp(w_center + cfg_.acc_lim_w * ctrl_dt, cfg_.w_min, cfg_.w_max);
 
@@ -43,14 +43,17 @@ std::vector<VelPair> TrajectoryGenerator::sample_window(double v_now, double w_n
   }
   // --- Force-include (0,0) like the Python version ---
   bool has_zero = false;
-  for (const auto& s : out) {
+  int nearest_idx = -1;
+  double best_norm = std::numeric_limits<double>::infinity();
+  for (int k = 0; k < static_cast<int>(out.size()); ++k) {
+    const auto& s = out[static_cast<size_t>(k)];
     if (std::abs(s.v) < 1e-12 && std::abs(s.w) < 1e-12) { has_zero = true; break; }
+    const double n = std::hypot(s.v, s.w);
+    if (n < best_norm) { best_norm = n; nearest_idx = k; }
   }
-  if (!has_zero) {
-    out.push_back(VelPair{0.0, 0.0});
+  if (!has_zero && nearest_idx >= 0) {
+    out[static_cast<size_t>(nearest_idx)] = VelPair{0.0, 0.0};
   }
-  // ---------------------------------------------------
-
   return out;
 }
 

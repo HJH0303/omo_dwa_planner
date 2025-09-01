@@ -1,5 +1,6 @@
 // src/obstacle_cost.cpp
 #include "omo_dwa_planner/obstacle_cost.hpp"
+#include <iostream>
 
 #include <algorithm>
 #include <cmath>
@@ -141,47 +142,71 @@ void ObstacleCost::markObstacleCell(int ix, int iy)
 
 std::vector<double> ObstacleCost::evaluate(const TrajSet& trjs) const
 {
-  // For each trajectory, return the mean normalized cell cost.
-  // If it hits lethal/inscribed cells or goes out of the map, return +inf.
   std::vector<double> out;
   out.reserve(trjs.size());
 
   const int sx = map_.sizeX();
   const int sy = map_.sizeY();
-  const double res = map_.resolution();
-  const double Xmax = sx * res;
-  const double Ymax = sy * res;
+  const double res   = map_.resolution();
+  const double Xmax  = sx * res;
+  const double Ymax  = sy * res;
   const double half_y = 0.5 * Ymax;
 
+  // --- Ring sampling params---
+  const int    RING_SAMPLES = 8;             
+  const double RING_RADIUS  = std::max(0.0, cfg_.robot_radius); 
+  const bool   USE_MEAN     = true;            
+
+  auto cell_ok_and_cost = [&](double px, double py, int * c_out) -> bool {
+    // if (px < 0.0 || px >= Xmax || py < -half_y || py >= half_y) {
+    //   std::cout<<"hji"<<std::endl;
+    //   return false;}
+    const int ix = static_cast<int>(std::floor(px / res));
+    const int iy = static_cast<int>(std::floor((py + half_y) / res));
+    const uint8_t c = map_.getCell(ix, iy);
+    if (c == LETHAL_OBSTACLE) {return false;}  
+    *c_out = c;
+    return true;
+  };
+
   for (const auto& trj : trjs) {
+
     if (trj.empty()) {
-    out.push_back(COLLISION_SCORE); // -1000
-    continue;
+      out.push_back(COLLISION_SCORE); // -1000
+      continue;
     }
 
-    double acc = 0.0;
-    int valid = 0;
-    bool collided = false;
+    double acc_trj = 0.0; // 궤적 전체 누적
+    int    valid_trj = 0;
+    bool   collided = false;
 
     for (const auto& s : trj) {
-      const double x = s.x; // forward
-      const double y = s.y; // left
+      // 1) 중심 셀
+      int c_center = 0;
+      if (!cell_ok_and_cost(s.x, s.y, & c_center)) { collided = true; break; }
 
-      if (x < 0.0 || x >= Xmax || y < -half_y || y >= half_y) { collided = true; break; }
+      double sum_sample = c_center; // 중심 포함 합산
+      for (int k = 0; k < RING_SAMPLES; ++k) {
+        const double ang = (2.0 * M_PI * k) / static_cast<double>(RING_SAMPLES);
+        const double px = s.x + RING_RADIUS * std::cos(ang);
+        const double py = s.y + RING_RADIUS * std::sin(ang);
 
-      const int ix = static_cast<int>(std::floor(x / res));
-      const int iy = static_cast<int>(std::floor((y + half_y) / res));
-      const uint8_t c = map_.getCell(ix, iy);
-      if (c >= INSCRIBED_COST) { collided = true; break; }
-
-      acc += static_cast<double>(c);
-      ++valid;
+        int c_ring = 0;
+        if (!cell_ok_and_cost(px, py, &c_ring)) { collided = true; break; }
+        sum_sample += static_cast<double>(c_ring);
       }
+      if (collided) break;
+      const double sample_cost = USE_MEAN
+        ? (sum_sample / static_cast<double>(RING_SAMPLES + 1)) 
+        :  sum_sample;                                         
+      acc_trj += sample_cost;
+      ++valid_trj;
+    }
 
-    if (collided || valid == 0) {
-        out.push_back(COLLISION_SCORE); // -1000
+    if (collided || valid_trj == 0) {
+      out.push_back(COLLISION_SCORE); // -1000
     } else {
-        out.push_back(acc / static_cast<double>(valid)); // 원시값 평균(정규화 없음)
+      out.push_back(acc_trj / static_cast<double>(valid_trj));
     }
   }
 

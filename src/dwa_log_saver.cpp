@@ -95,6 +95,8 @@ void DwaLogSaver::end_run()
   write_meta_json_unlocked();
   write_diag_json_unlocked();
   write_target_points_unlocked();
+  write_target_center_points_unlocked();
+  write_odometry_unlocked(); 
   saved_ = true;
 }
 
@@ -217,7 +219,40 @@ void DwaLogSaver::add_target_point(double stamp_sec,
   if (!enabled_ || !started_) return;
   target_points_.push_back(TargetPoint{stamp_sec, x, y, z, frame_id});
 }
+void DwaLogSaver::add_target_center_point(double stamp_sec,
+                                   double x, double y, double z,
+                                   const std::string& frame_id)
+{
+  std::lock_guard<std::mutex> lk(mtx_);
+  if (!enabled_ || !started_) return;
+  target_center_points_.push_back(TargetPoint{stamp_sec, x, y, z, frame_id});
+}
+void DwaLogSaver::add_odometry_tick(int t_idx,
+                                    double stamp_sec,
+                                    double x, double y, double yaw,
+                                    double vx, double wz,
+                                    const std::string& frame_id)
+{
+  std::lock_guard<std::mutex> lk(mtx_);
+  if (!enabled_ || !started_) return;
+  odom_ticks_.push_back(OdomTickSample{t_idx, stamp_sec, x, y, yaw, vx, wz, frame_id});
+}
+void DwaLogSaver::write_odometry_unlocked()
+{
+  if (odom_ticks_.empty()) return;
+  std::ofstream ofs(run_dir_ + "/odometry.csv");
+  if (!ofs) return;
 
+  ofs << "t_idx,stamp_sec,x,y,yaw,vx,wz,frame_id\n";
+  ofs << std::fixed << std::setprecision(6);
+  for (const auto& o : odom_ticks_) {
+    ofs << o.t_idx << ","
+        << o.stamp_sec << ","
+        << o.x << "," << o.y << "," << o.yaw << ","
+        << o.vx << "," << o.wz << ","
+        << to_csv_quoted(o.frame_id) << "\n";
+  }
+}
 // -------------------- Writers (CSV) --------------------
 
 void DwaLogSaver::write_params_json_unlocked()
@@ -482,5 +517,19 @@ void DwaLogSaver::write_target_points_unlocked()
         << to_csv_quoted(tp.frame_id) << "\n";
   }
 }
-
+void DwaLogSaver::write_target_center_points_unlocked()
+{
+  if (target_center_points_.empty()) return;
+  std::ofstream ofs(run_dir_ + "/target_center_points.csv");
+  if (!ofs) return;
+  ofs << "stamp_sec,x,y,z,frame_id\n";
+  for (const auto& tp : target_center_points_) {
+    ofs << std::fixed << std::setprecision(6)
+        << tp.stamp_sec << ","
+        << tp.x << ","
+        << tp.y << ","
+        << tp.z << ","
+        << to_csv_quoted(tp.frame_id) << "\n";
+  }
+}
 } // namespace omo_dwa

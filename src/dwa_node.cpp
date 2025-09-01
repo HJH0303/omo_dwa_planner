@@ -5,6 +5,8 @@
 #include <string>
 #include <limits>
 #include <chrono>
+#include <iostream>
+
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
@@ -27,8 +29,52 @@
 #include "omo_dwa_planner/obstacle_cost.hpp"
 #include "omo_dwa_planner/cost_evaluator.hpp"
 #include "omo_dwa_planner/dwa_log_saver.hpp"
-
+#include "omo_dwa_planner/global_path_overlap.hpp"
 namespace omo_dwa {
+    
+  namespace {
+
+  // REP-103 yaw from quaternion
+  inline double yaw_from_quat(const geometry_msgs::msg::Quaternion &q)
+  {
+    const double siny = 2.0 * (q.w * q.z + q.x * q.y);
+    const double cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+    return std::atan2(siny, cosy);
+  }
+
+  /**
+  * odom 기준 직선: A_w x + B_w y + C_w = 0  →  base_link 기준으로 변환
+  * p_w = R p_b + t,  n_w = [A_w, B_w]^T
+  * n_b = R^T n_w
+  * C_b = C_w + n_w^T t
+  * (필요 시 정규화)
+  */
+  inline void line_odom_to_base(
+      const nav_msgs::msg::Odometry& odom,
+      double A_w, double B_w, double C_w,
+      double& A_b, double& B_b, double& C_b)
+  {
+    const auto& p = odom.pose.pose.position;
+    const auto& q = odom.pose.pose.orientation;
+
+    const double yaw = yaw_from_quat(q);
+    const double c = std::cos(yaw), s = std::sin(yaw);
+
+    // n_b = R^T n_w
+    A_b =  c * A_w + s * B_w;
+    B_b = -s * A_w + c * B_w;
+
+    // C_b = C_w + n_w^T t
+    C_b = C_w + A_w * p.x + B_w * p.y;
+
+    // (선택) 수치 안정화를 위한 정규화
+    const double L = std::hypot(A_b, B_b);
+    if (L > 1e-12) {
+      A_b /= L; B_b /= L; C_b /= L;
+    }
+  }
+
+  } // namespace
 
 // ===== Constructor ===========================================================
 DwaNodeImpl::DwaNodeImpl() : rclcpp::Node("dwa_node")
@@ -36,37 +82,36 @@ DwaNodeImpl::DwaNodeImpl() : rclcpp::Node("dwa_node")
   // ---- Parameters ----
   cfg_.sim_period_hz        = this->declare_parameter<double>("sim_period_hz", 20.0);
   cfg_.dt                   = this->declare_parameter<double>("dt", 0.2);
-  cfg_.sim_time             = this->declare_parameter<double>("sim_time", 3.0);
+  cfg_.sim_time             = this->declare_parameter<double>("sim_time", 6.5);
   cfg_.v_samples            = this->declare_parameter<int>("v_samples", 15);
   cfg_.w_samples            = this->declare_parameter<int>("w_samples", 15);
 
-  cfg_.acc_lim_v            = this->declare_parameter<double>("acc_lim_v", 4.0);
-  cfg_.acc_lim_w            = this->declare_parameter<double>("acc_lim_w", 8.0);
+  cfg_.acc_lim_v            = this->declare_parameter<double>("acc_lim_v", 2.0);
+  cfg_.acc_lim_w            = this->declare_parameter<double>("acc_lim_w", 5.0);
   cfg_.v_min                = this->declare_parameter<double>("v_min", 0.0);
-  cfg_.v_max                = this->declare_parameter<double>("v_max", 1.0);
-  cfg_.w_min                = this->declare_parameter<double>("w_min", -6.0);
-  cfg_.w_max                = this->declare_parameter<double>("w_max",  6.0);
+  cfg_.v_max                = this->declare_parameter<double>("v_max", 2.0);
+  cfg_.w_min                = this->declare_parameter<double>("w_min", -5.0);
+  cfg_.w_max                = this->declare_parameter<double>("w_max",  5.0);
 
   cfg_.map_width            = this->declare_parameter<double>("map_width", 4.0);
   cfg_.map_height           = this->declare_parameter<double>("map_height", 4.0);
   cfg_.cell_resolution      = this->declare_parameter<double>("cell_resolution", 0.1);
   cfg_.min_z_threshold      = this->declare_parameter<double>("min_z_threshold", -0.2);
   cfg_.max_z_threshold      = this->declare_parameter<double>("max_z_threshold",  0.50);
-  cfg_.robot_radius         = this->declare_parameter<double>("robot_radius", 0.2);
-  cfg_.inflation_radius     = this->declare_parameter<double>("inflation_radius", 0.4);
-  cfg_.cost_scaling_factor  = this->declare_parameter<double>("cost_scaling_factor", 8.0);
+  cfg_.robot_radius         = this->declare_parameter<double>("robot_radius", 0.5);
+  cfg_.inflation_radius     = this->declare_parameter<double>("inflation_radius", 0.3);
+  cfg_.cost_scaling_factor  = this->declare_parameter<double>("cost_scaling_factor", 2.0);
   cfg_.robot_base_frame     = this->declare_parameter<std::string>("robot_base_frame", "base_link");
   cfg_.scan_offset_x        = this->declare_parameter<double>("scan_offset_x", -0.4);
   cfg_.scan_offset_y        = this->declare_parameter<double>("scan_offset_y",  0.0);
-  cfg_.goal_corridor_radius = this->declare_parameter<double>("goal_corridor_radius", 0.30);
   cfg_.align_xshift         = this->declare_parameter<double>("align_xshift", -0.30);
   cfg_.align_yshift         = this->declare_parameter<double>("align_yshift",  0.00);
 
-  cfg_.w_obstacle           = this->declare_parameter<double>("w_obstacle", 1.);
-  cfg_.w_path               = this->declare_parameter<double>("w_path", 0.01);
-  cfg_.w_alignment          = this->declare_parameter<double>("w_alignment", 0.01);
-  cfg_.w_goal               = this->declare_parameter<double>("w_goal", 0.01);
-  cfg_.w_goal_center        = this->declare_parameter<double>("w_goal_center", 0.01);
+  cfg_.w_obstacle           = this->declare_parameter<double>("w_obstacle", 0.3);
+  cfg_.w_path               = this->declare_parameter<double>("w_path", 2.0);
+  cfg_.w_alignment          = this->declare_parameter<double>("w_alignment", 2.0);
+  cfg_.w_goal               = this->declare_parameter<double>("w_goal", 0.35);
+  cfg_.w_goal_center        = this->declare_parameter<double>("w_goal_center", 0.35);
 
   // Visualization params
   publish_all_trajs_        = this->declare_parameter<bool>("publish_all_trajs", true);
@@ -135,6 +180,7 @@ DwaNodeImpl::DwaNodeImpl() : rclcpp::Node("dwa_node")
   rclcpp::on_shutdown([this](){
   if (logger_) logger_->end_run();
   });
+  
 }
 
 DwaNodeImpl::~DwaNodeImpl() {
@@ -160,22 +206,9 @@ void DwaNodeImpl::scan_cb(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
 
 void DwaNodeImpl::wp_cb(const geometry_msgs::msg::PointStamped::SharedPtr msg) {
   dp_->set_waypoint(msg);
-  if (logger_) {
-    const double stamp = rclcpp::Time(msg->header.stamp).seconds();
-    logger_->add_target_point(stamp,
-                              msg->point.x, msg->point.y, msg->point.z,
-                              msg->header.frame_id);
-  }
-
 }
 void DwaNodeImpl::wpc_cb(const geometry_msgs::msg::PointStamped::SharedPtr msg) {
-  dp_->set_waypoint(msg);
-  if (logger_) {
-    const double stamp = rclcpp::Time(msg->header.stamp).seconds();
-    logger_->add_target_point(stamp,
-                              msg->point.x, msg->point.y, msg->point.z,
-                              msg->header.frame_id);
-  }
+  dp_->set_center_waypoint(msg);
 }
 
 
@@ -189,7 +222,7 @@ void DwaNodeImpl::timer_cb()
   // 1) Ready check
   auto odom = dp_->get_odometry();
   auto wp   = dp_->get_waypoint();
-  auto wpc   = dp_->get_waypoint();
+  auto wpc   = dp_->get_center_waypoint();
 
   if (!odom || !wp || !wpc) {
     return;
@@ -229,19 +262,39 @@ void DwaNodeImpl::timer_cb()
 
   // 5) Cost terms
   std::vector<double> c_obst = obs_cost_->evaluate(trjs);
-
   std::vector<double> c_path, c_align;
   if (have_line) {
-    c_path  = dist_costs_->path_cost(trjs, A, B, C);
-    c_align = dist_costs_->alignment_cost(trjs, A, B, C, cfg_.align_xshift, cfg_.align_yshift);
+    // odom 기준의 직선을 base_link로 변환
+    double A_b = 0.0, B_b = 0.0, C_b = 0.0;
+    line_odom_to_base(*odom, A, B, C, A_b, B_b, C_b);
+
+    // base_link 프레임에서 궤적(trjs)와 동일 프레임으로 평가
+    c_path  = dist_costs_->path_cost(trjs, A_b, B_b, C_b);
+    c_align = dist_costs_->alignment_cost(trjs, A_b, B_b, C_b,
+                                          cfg_.align_xshift, cfg_.align_yshift);
   } else {
     c_path.assign(trjs.size(),  std::numeric_limits<double>::infinity());
     c_align.assign(trjs.size(), std::numeric_limits<double>::infinity());
   }
 
   auto c_goal   = dist_costs_->goal_cost(trjs, local_goal);
-  auto c_center = dist_costs_->goal_center_cost(trjs, local_center_goal, cfg_.goal_corridor_radius);
+  auto c_center = dist_costs_->goal_center_cost(trjs, local_center_goal, cfg_.align_xshift,cfg_.align_yshift);
+  // target은 이미 base_link 좌표계로 들어오므로 local_goal 사용
+  const double tbx = local_goal.x;
+  const double tby = local_goal.y;
+   // 최신 코스트맵 가져오기 (base_link 기준 OccupancyGrid)
+  nav_msgs::msg::OccupancyGrid grid_for_overlap = obs_cost_->getCostmapMsg();
 
+    // 코리도 반경 = 로봇 반경(+소량 여유). 필요 시 padding 조정 가능.
+  const double corridor_r = cfg_.robot_radius;
+
+  const auto ov = omo_dwa::check_global_path_obstacle_overlap(
+        grid_for_overlap, tbx, tby, corridor_r /*, lethal=254, near=180 */);
+  if (ov.has_overlap) {
+      // 겹치면 경로-정렬 관련 비용을 0으로 → weight=0과 동일 효과
+      std::fill(c_path.begin(),  c_path.end(),  0.0);
+      std::fill(c_align.begin(), c_align.end(), 0.0);
+  }
   // 6) Assemble term matrix: [N x 5] = [obst, path, align, goal, center]
   const std::size_t N = samples.size();
   const int T = 5;
@@ -253,61 +306,112 @@ void DwaNodeImpl::timer_cb()
     terms[i][3] = (i < c_goal.size())   ? c_goal[i]   : 0.0;
     terms[i][4] = (i < c_center.size()) ? c_center[i] : 0.0;
   }
-
+  
   // 7) Evaluate & pick best
   auto eval = evaluator_->evaluate(samples, terms);
-
-  // 8) Publish cmd_vel
+  double best_align = std::numeric_limits<double>::quiet_NaN();
+  if (eval.best_index >= 0 && static_cast<std::size_t>(eval.best_index) < terms.size()) {
+    best_align = terms[eval.best_index][2];
+  }
+  // 매 tick 출력 (스팸이면 INFO_THROTTLE로 바꿔도 됨)
+  RCLCPP_INFO(this->get_logger(), "[ALIGN] best=%.6f", best_align);
   geometry_msgs::msg::Twist cmd;
-  cmd.linear.x  = eval.best_cmd.v;
-  cmd.angular.z = eval.best_cmd.w;
+  bool blocked_by_obstacles = true;
+
+  for (double v : c_obst) {
+    if (std::isfinite(v) && v >= 0.0) { blocked_by_obstacles = false; break; }
+  }
+  if (blocked_by_obstacles || eval.best_index < 0) {
+    cmd.linear.x  = 0.0;
+    cmd.angular.z = 1.0;  // spin at 70% of max turn rate
+  } else {
+    cmd.linear.x  = eval.best_cmd.v;
+    cmd.angular.z = eval.best_cmd.w;
+  }
+  
   cmd_pub_->publish(cmd);
 
   // 9) Visualize best traj (optional)
-if (eval.best_index >= 0 && static_cast<std::size_t>(eval.best_index) < trjs.size()){
+  if (eval.best_index >= 0 && static_cast<std::size_t>(eval.best_index) < trjs.size()){
     publish_best_traj_marker(trjs[eval.best_index]);
   }
 
   // 10) Publish local costmap (optional, throttled)
+  
+  const rclcpp::Time now = this->now();
+  auto grid = obs_cost_->getCostmapMsg();   // bottom-center origin handled inside
+  grid.header.stamp = now;
+  grid.header.frame_id = costmap_frame_;    // usually "base_link"
+  // (a) Publish throttled
   if (publish_costmap_ && costmap_pub_) {
-    const rclcpp::Time now = this->now();
     const double period = (costmap_publish_hz_ > 0.0) ? (1.0 / costmap_publish_hz_) : 0.0;
     if (period <= 0.0 ||
         (last_costmap_pub_.nanoseconds() == 0) ||
         (now - last_costmap_pub_) >= rclcpp::Duration::from_seconds(period))
     {
-      auto grid = obs_cost_->getCostmapMsg();   // bottom-center origin handled inside
-      grid.header.stamp = now;
-      grid.header.frame_id = costmap_frame_;    // usually "base_link"
       costmap_pub_->publish(grid);
       last_costmap_pub_ = now;
-      if (logger_) {
-        std::vector<int16_t> cells;
-        cells.reserve(grid.data.size());
-        for (int8_t v : grid.data) cells.push_back(static_cast<int16_t>(v));
-
-        DwaLogSaver::CostmapMeta meta;
-        meta.resolution = grid.info.resolution;
-        meta.origin_x   = grid.info.origin.position.x;
-        meta.origin_y   = grid.info.origin.position.y;
-        meta.size_x     = static_cast<int>(grid.info.width);
-        meta.size_y     = static_cast<int>(grid.info.height);
-
-        logger_->add_costmap(cells, meta.size_x, meta.size_y, now.seconds(), meta);
-      }
     }
   }
+
+  // (b) Log every control tick
+  if (logger_) {
+    std::vector<int16_t> cells;
+    cells.reserve(grid.data.size());
+    for (int8_t v : grid.data) cells.push_back(static_cast<int16_t>(v));
+    DwaLogSaver::CostmapMeta meta;
+    meta.resolution = grid.info.resolution;
+    meta.origin_x   = grid.info.origin.position.x;
+    meta.origin_y   = grid.info.origin.position.y;
+    meta.size_x     = static_cast<int>(grid.info.width);
+    meta.size_y     = static_cast<int>(grid.info.height);
+
+    logger_->add_costmap(cells, meta.size_x, meta.size_y, now.seconds(), meta);
+  }
+  if (logger_) {
+    const auto& p = odom->pose.pose.position;
+    const auto& q = odom->pose.pose.orientation;
+    const double siny = 2.0 * (q.w * q.z + q.x * q.y);
+    const double cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+    const double yaw  = std::atan2(siny, cosy);
+
+    const double vx = odom->twist.twist.linear.x;
+    const double wz = odom->twist.twist.angular.z;
+    const double stamp_sec = rclcpp::Time(odom->header.stamp).seconds();
+
+    logger_->add_odometry_tick(static_cast<int>(tick_),
+                               stamp_sec,
+                               p.x, p.y, yaw,
+                               vx, wz,
+                               odom->header.frame_id);
+  }
+  // 8.5) Tick-synchronous logging for targets (stamp = now)
+  if (logger_) {
+    if (wp) {
+      logger_->add_target_point(static_cast<int>(tick_),
+                                wp->point.x, wp->point.y, wp->point.z,
+                                wp->header.frame_id);
+    }
+    if (wpc) {
+      logger_->add_target_center_point(static_cast<int>(tick_),
+                                wpc->point.x, wpc->point.y, wpc->point.z,
+                                wpc->header.frame_id);
+   }
+  }
+
   // 11) Logging
-  logger_->log_iteration(
-    static_cast<int>(tick_),
-    samples,
-    eval.total_costs,
-    eval.best_cost_terms,
-    std::optional<std::vector<std::vector<double>>>{eval.normalized_terms},  // normalized
-    std::optional<std::vector<std::vector<double>>>{terms},                  // raw (pre-normalize)
-    std::optional<VelPair>{eval.best_cmd},                                   // ★ best (v,w)
-    eval.best_index                                                          // ★ best index
-  );
+  if (logger_){
+    logger_->log_iteration(
+      static_cast<int>(tick_),
+      samples,
+      eval.total_costs,
+      eval.best_cost_terms,
+      std::optional<std::vector<std::vector<double>>>{eval.normalized_terms},  // normalized
+      std::optional<std::vector<std::vector<double>>>{terms},                  // raw (pre-normalize)
+      std::optional<VelPair>{eval.best_cmd},                                   // ★ best (v,w)
+      eval.best_index                                                          // ★ best index
+    );
+  }
 
   ++tick_;
 }

@@ -61,11 +61,7 @@ std::vector<double> DistanceCosts::path_cost(const TrajSet& trjs,
   return out;
 }
 
-// -----------------------------------------------------------------------------
-// Alignment cost to the line tangent.
-// For line Ax+By+C=0 with unit normal (A,B), the tangent direction is (-B, A).
-// Let psi_line = atan2(A, -B). The error is |wrapToPi(psi_end - psi_line)|.
-// -----------------------------------------------------------------------------
+
 std::vector<double> DistanceCosts::alignment_cost(const TrajSet& trjs,
                                                   double A, double B, double C,
                                                   double xshift, double yshift) const
@@ -120,26 +116,31 @@ std::vector<double> DistanceCosts::goal_cost(const TrajSet& trjs, const Pose2D& 
 // -----------------------------------------------------------------------------
 std::vector<double> DistanceCosts::goal_center_cost(const TrajSet& trjs,
                                                     const Pose2D& goal,
-                                                    double center_radius) const
+                                                    double xshift, double yshift) const
 {
   std::vector<double> out;
   out.reserve(trjs.size());
 
-  const double L = std::hypot(goal.x, goal.y);
-  if (L < 1e-9) {
-    out.assign(trjs.size(), 0.0);
-    return out;
-  }
-  // Unit normal n to the origin->goal line
-  const double nx =  (goal.y / L);
-  const double ny = -(goal.x / L);
-  const double r  = std::max(0.0, center_radius);
 
   for (const auto& trj : trjs) {
-    if (trj.empty()) { out.push_back(0.0); continue; }
+    if (trj.empty()) { out.push_back(100.0); continue; }
+
     const Pose2D& s_end = trj.back();
-    const double cte = std::abs(nx * s_end.x + ny * s_end.y);
-    out.push_back(std::max(0.0, cte - r));
+    const double cx = goal.x;
+    const double cy = goal.y;
+
+    const double ch = std::cos(s_end.yaw);
+    const double sh = std::sin(s_end.yaw);
+    const double hx = ch, hy = sh;          // heading
+    const double nx = -sh, ny = ch;         // left-normal (CCW)
+
+    const double cax = cx + xshift   * hx + yshift * nx;
+    const double cay = cy + xshift   * hy + yshift * ny;
+
+    const double dx  = s_end.x - cax;
+    const double dy  = s_end.y - cay;
+    const double d   = std::hypot(dx, dy);
+    out.push_back(d);
   }
   return out;
 }

@@ -1,0 +1,4 @@
+key,value
+save_mode,fixed
+samples_per_tick_hint.v_samples,15
+samples_per_tick_hint.w_samples,15

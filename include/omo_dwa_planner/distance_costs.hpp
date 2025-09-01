@@ -43,7 +43,7 @@ public:
   /// Cross-track error of final pose to origin->goal line, minus corridor radius, clamped at 0.
   std::vector<double> goal_center_cost(const TrajSet& trjs,
                                        const Pose2D& goal,
-                                       double center_radius) const;
+                                       double xshift, double yshift) const;
 
 private:
   Config cfg_;

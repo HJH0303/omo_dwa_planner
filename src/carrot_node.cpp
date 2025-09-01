@@ -43,9 +43,10 @@ public:
   {
     // --- Parameters (mirrors the Python node) ---
     // corners: flattened [x0, y0, x1, y1, ...] in odom/world frame
-    this->declare_parameter<std::vector<double>>("corners", {10.0, 0.0});
-    this->declare_parameter<double>("goal_tolerance", 0.2);   // [m]
-    this->declare_parameter<double>("lookahead_max", 5.0);     // [m]
+    this->declare_parameter<std::vector<double>>("relative_targets", {10.0,0.0});
+
+    this->declare_parameter<double>("goal_tolerance", 0.3);   // [m]
+    this->declare_parameter<double>("lookahead_max", 4.0);     // [m]
     this->declare_parameter<double>("lookahead_min", 0.05);    // [m] set 0.0 to disable
     this->declare_parameter<double>("timer_period", 0.05);     // [s]
     this->declare_parameter<bool>("advance_when_reached", true);
@@ -54,14 +55,15 @@ public:
 
 
     // Load params
-    std::vector<double> pts = this->get_parameter("corners").as_double_array();
-    if (pts.size() < 2 || (pts.size() % 2) != 0) {
-      throw std::runtime_error("corners must be a flat list of [x0, y0, x1, y1, ...]");
+    std::vector<double> rel_flat = this->get_parameter("relative_targets").as_double_array();
+    if (rel_flat.empty() || (rel_flat.size() % 2) != 0) {
+      throw std::runtime_error("relative_targets must be [xb0, yb0, xb1, yb1, ...] in base_link");
     }
-    goals_.reserve(pts.size() / 2);
-    for (size_t i = 0; i + 1 < pts.size(); i += 2) {
-      goals_.emplace_back(pts[i], pts[i + 1]);
+    rel_targets_b_.reserve(rel_flat.size() / 2);
+    for (size_t i = 0; i + 1 < rel_flat.size(); i += 2) {
+      rel_targets_b_.emplace_back(rel_flat[i], rel_flat[i + 1]);
     }
+
 
     tol_      = this->get_parameter("goal_tolerance").as_double();
     Lmax_     = this->get_parameter("lookahead_max").as_double();
@@ -87,7 +89,7 @@ public:
 
     RCLCPP_INFO(this->get_logger(),
       "CarrotNode: tol=%.2fm, Lmax=%.2fm, Lmin=%.2fm, goals=%zu, advance=%s, loop=%s",
-      tol_, Lmax_, Lmin_, goals_.size(),
+      tol_, Lmax_, Lmin_, rel_targets_b_.size(),
       (advance_ ? "true" : "false"), (loop_ ? "true" : "false"));
   }
 
@@ -102,72 +104,98 @@ private:
     state_.yaw = yaw_from_quat(q);
     state_.valid = true;
   }
+  void set_anchor_to_current_pose()
+  {
+    anchor_x_ = state_.x;
+    anchor_y_ = state_.y;
+    anchor_yaw_ = state_.yaw;
+    anchor_valid_ = true;
+  }
+  void advance_to_next_goal()
+  {
+    ++idx_;
+    if (idx_ >= rel_targets_b_.size()) {
+      if (loop_ && !rel_targets_b_.empty()) idx_ = 0;
+      else { has_active_goal_ = false; return; }
+    }
+    set_anchor_to_current_pose();
+    has_active_goal_ = true;
+  }
+
 
   // --- Timer loop ---
   void timer_cb()
   {
-    // Require odometry and at least one goal
-    if (!state_.valid || goals_.empty()) {
-      return;
-    }
+    if (!state_.valid) return;
+    if (rel_targets_b_.empty()) return;
 
-    // Current goal (in odom/world frame)
-    const auto &goal = goals_[idx_];
-    const double gx = goal.first;
-    const double gy = goal.second;
+    // 1) 초기 앵커 세팅
+    if (!anchor_valid_) set_anchor_to_current_pose();
+    if (!has_active_goal_) { has_active_goal_ = true; }
 
-    // 1) World offset to goal and distance
-    const double dx_w = gx - state_.x;
-    const double dy_w = gy - state_.y;
-    const double dist = std::hypot(dx_w, dy_w);
+    // 2) 현재 상대 타겟 (전환 당시 base_link = B_A 기준 좌표)
+    const auto [xb, yb] = rel_targets_b_[idx_];
 
-    // 2) Reached goal?
-    if (dist <= tol_) {
+    // 3) 현재 odom을 앵커 프레임(B_A)로 역변환: p_k^{B_A} = R(-θ_A) * (p_k^W - p_A^W)
+    const double dxA = state_.x - anchor_x_;
+    const double dyA = state_.y - anchor_y_;
+    const double cA  = std::cos(anchor_yaw_), sA = std::sin(anchor_yaw_);
+    const double xk_A =  cA * dxA + sA * dyA;
+    const double yk_A = -sA * dxA + cA * dyA;
+
+    // 4) 앵커 프레임 오차: e^{B_A} = g^{B_A} - p_k^{B_A}
+    double ex_A = xb - xk_A;
+    double ey_A = yb - yk_A;
+    double d = std::hypot(ex_A, ey_A);
+
+    // 5) 도달 판정 (앵커 프레임/현재 프레임 어느 쪽이든 길이는 동일)
+    if (d <= tol_) {
       if (advance_) {
-        if (idx_ + 1 < goals_.size()) {
-          ++idx_;
-          RCLCPP_INFO(this->get_logger(), "Reached goal %zu, advancing to %zu", idx_ - 1, idx_);
-        } else if (loop_ && goals_.size() > 1) {
-          idx_ = 0;
-          RCLCPP_INFO(this->get_logger(), "Reached last goal, looping to index 0");
-        } else {
-          // Stop at last goal: publish (0,0) and idle
-          publish_target(0.0, 0.0);
-          return;
-        }
+        advance_to_next_goal();                   // 앵커를 지금으로 갱신
+        if (!has_active_goal_) { publish_target(0.0, 0.0); return; }
+
+        // 새 타겟으로 오차 재계산
+        const auto [xb2, yb2] = rel_targets_b_[idx_];
+        const double dxA2 = state_.x - anchor_x_;
+        const double dyA2 = state_.y - anchor_y_;
+        const double cA2  = std::cos(anchor_yaw_), sA2 = std::sin(anchor_yaw_);
+        const double xk_A2 =  cA2 * dxA2 + sA2 * dyA2;
+        const double yk_A2 = -sA2 * dxA2 + cA2 * dyA2;
+        ex_A = xb2 - xk_A2;
+        ey_A = yb2 - yk_A2;
+        d = std::hypot(ex_A, ey_A);
       } else {
         publish_target(0.0, 0.0);
         return;
       }
     }
 
-    // 3) Transform vector into base_link: (ex, ey) = R(-yaw) * [dx_w, dy_w]
-    const double cy = std::cos(state_.yaw);
-    const double sy = std::sin(state_.yaw);
-    const double ex =  cy * dx_w + sy * dy_w;
-    const double ey = -sy * dx_w + cy * dy_w;
+    if (d < 1e-9) { publish_target(0.0, 0.0); return; }
 
-    const double r = std::hypot(ex, ey);
-    if (r < 1e-6) {
-      publish_target(0.0, 0.0);
-      return;
-    }
+    // 6) 현재 base_link로 회전만 적용: e^{B_k} = R(θ_k - θ_A) * e^{B_A}
+    const double dth = state_.yaw - anchor_yaw_;
+    const double cd  = std::cos(dth), sd = std::sin(dth);
+    const double ex_B =  cd * ex_A + sd * ey_A;
+    const double ey_B = -sd * ex_A + cd * ey_A;
 
-    // 4) Carrot length L = clamp(dist, Lmin, Lmax), but do not exceed remaining distance
-    double L = std::min(dist, Lmax_);
-    if (Lmin_ > 0.0) {
-      L = std::max(Lmin_, L);
-      L = std::min(L, dist);
-    }
+    const double r = std::hypot(ex_B, ey_B);
+    if (r < 1e-9) { publish_target(0.0, 0.0); return; }
 
+    // 7) 카롯 길이 클램프 → base_link 카롯
+    double L = std::min(d, Lmax_);
+    if (Lmin_ > 0.0) L = std::max(Lmin_, L);
+    L = std::min(L, d);
     const double k = L / r;
-    const double tx = ex * k;   // target in base_link
-    const double ty = ey * k;
+    const double tx_b = ex_B * k;
+    const double ty_b = ey_B * k;
+
+    double px_w = 0.0, py_w = 0.0; 
 
     // 5) Publish outputs
-    publish_target(tx, ty);
-    publish_path_seg(state_.x, state_.y, gx, gy);       // segment in odom/world
-    publish_path_params(0., 0., tx, ty);    // A,B,C for local straight segment
+    publish_target(tx_b, ty_b);
+    publish_center_target(tx_b, ty_b, &px_w, &py_w);
+    publish_path_seg(0., 0., px_w, py_w);       // segment in odom/world
+    publish_path_params(0., 0., px_w, py_w);    // A,B,C for local straight segment
   }
 
   // --- Publishers (helpers) ---
@@ -183,39 +211,39 @@ private:
     msg.point.z = 0.0;
     target_pub_->publish(msg);
   }
-  void publish_center_target(double tx_b, double ty_b)
-    {
-      geometry_msgs::msg::PointStamped msg;
-      msg.header.stamp = this->now();
-      msg.header.frame_id = "odom";
 
-      // base_link -> world(odom)
+  void publish_center_target(double tx_b, double ty_b, double* px_out, double* py_out)
+    {
+      // 1) base_link -> world(odom)
       const double cy = std::cos(state_.yaw);
       const double sy = std::sin(state_.yaw);
       const double px = state_.x + (cy * tx_b - sy * ty_b);
       const double py = state_.y + (sy * tx_b + cy * ty_b);
-
+      if (px_out) *px_out = px;
+      if (py_out) *py_out = py;
+      // 2) unit vector from origin to (px,py) in world
       const double r = std::hypot(px, py);
-
-      if (r < 1e-9) {
-        // Degenerate: keep as-is
-        msg.point.x = px;
-        msg.point.y = py;
-        msg.point.z = 0.0;
-        target_center_pub_->publish(msg);
-        return;
+      double nx_w = px, ny_w = py;
+      if (r > 1e-9) {
+        const double ux = px / r;
+        const double uy = py / r;
+        // 3) center_offset 적용 (world)
+        nx_w = px + center_offset_ * ux;
+        ny_w = py + center_offset_ * uy;
       }
 
-      // Unit direction from origin to (px, py)
-      const double ux = px / r;
-      const double uy = py / r;
+      // 4) world -> base_link (되돌리기)
+      const double dx = nx_w - state_.x;
+      const double dy = ny_w - state_.y;
+      const double nx_b =  cy * dx + sy * dy;
+      const double ny_b = -sy * dx + cy * dy;
 
-      // Shift by center_offset_ along that direction
-      const double nx = px + center_offset_ * ux;
-      const double ny = py + center_offset_ * uy;
-
-      msg.point.x = nx;
-      msg.point.y = ny;
+      // 5) publish in base_link
+      geometry_msgs::msg::PointStamped msg;
+      msg.header.stamp = this->now();
+      msg.header.frame_id = "base_link";
+      msg.point.x = nx_b;
+      msg.point.y = ny_b;
       msg.point.z = 0.0;
       target_center_pub_->publish(msg);
     }
@@ -274,18 +302,23 @@ private:
 
 private:
   // Parameters
-  double tol_{0.2};
-  double Lmax_{5.0};
+  double tol_{0.3};
+  double Lmax_{4.0};
   double Lmin_{0.05};
   double period_{0.05};
   bool   advance_{true};
   bool   loop_{false};
   double   center_offset_{-0.3};
 
-
-  // Goals in odom/world frame
-  std::vector<std::pair<double,double>> goals_;
+  // RELATIVE base_link offsets sequence
+  std::vector<std::pair<double,double>> rel_targets_b_;
   size_t idx_{0};
+
+  // Anchor pose at the switching moment
+  double anchor_x_{0.0}, anchor_y_{0.0}, anchor_yaw_{0.0};
+  bool   anchor_valid_{false};
+
+  bool   has_active_goal_{false};
 
   // Robot state (odom)
   State state_;

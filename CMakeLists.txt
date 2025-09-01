@@ -31,6 +31,8 @@ add_library(omo_dwa_core
   src/dwa_log_saver.cpp
   src/data_provider.cpp
   src/local_costmap2d.cpp
+  src/global_path_overlap.cpp
+
 
 )
 
@@ -57,11 +59,21 @@ target_link_libraries(dwa_node omo_dwa_core)
 ament_target_dependencies(dwa_node rclcpp)
 
 add_executable(carrot_node src/carrot_node.cpp)
+add_executable(carrot_node_vlm src/carrot_node_vlm.cpp)
+
 target_link_libraries(carrot_node omo_dwa_core)
+target_link_libraries(carrot_node_vlm omo_dwa_core)
+
 ament_target_dependencies(carrot_node rclcpp)
+ament_target_dependencies(carrot_node_vlm rclcpp)
 
 # --- Install ---
 install(TARGETS omo_dwa_core dwa_node carrot_node
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+install(TARGETS omo_dwa_core dwa_node carrot_node_vlm
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -72,8 +84,8 @@ install(DIRECTORY include/
 )
 
 # (선택) 설정/런치 설치 시
-# install(DIRECTORY config launch
-#   DESTINATION share/${PROJECT_NAME}
-# )
+install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+)
 
 ament_package()

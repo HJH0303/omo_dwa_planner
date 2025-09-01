@@ -45,11 +45,13 @@ public:
 private:
   // --- Callbacks ---
   void odom_cb(const nav_msgs::msg::Odometry::SharedPtr msg);
+  void set_anchor_to_current_pose();
+  void advance_to_next_goal();
   void timer_cb();
 
   // --- Helpers (publishers) ---
   void publish_target(double x, double y);
-  void publish_center_target(double x, double y);
+  void publish_center_target(double x, double y, double* px_out, double* py_out);
 
   void publish_path_seg(double x0, double y0, double xg, double yg);
   void publish_path_params(double x0, double y0, double xg, double yg);
@@ -62,11 +64,14 @@ private:
   bool   advance_{true};
   bool   loop_{false};
   double   center_offset_{-0.3};
+  
+  std::vector<std::pair<double,double>> rel_targets_b_;
+  size_t idx_{0};
 
-
-  // --- Waypoints (odom/world frame) ---
-  std::vector<std::pair<double,double>> goals_;
-  std::size_t idx_{0};
+  // Anchor pose at the switching moment
+  double anchor_x_{0.0}, anchor_y_{0.0}, anchor_yaw_{0.0};
+  bool   anchor_valid_{false};
+  bool   has_active_goal_{false};
 
   // --- Robot state (odom) ---
   struct State {

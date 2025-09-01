@@ -6,6 +6,7 @@
 #include <optional>
 #include <cmath>    // ← std::isfinite
 #include <limits>   // ← std::numeric_limits::quiet_NaN
+#include <string>
 
 #include "omo_dwa_planner/types.hpp"
 #include "omo_dwa_planner/config.hpp"
@@ -93,6 +94,14 @@ public:
   void add_target_point(double stamp_sec,
                         double x, double y, double z,
                         const std::string& frame_id);
+  void add_target_center_point(double stamp_sec,
+                        double x, double y, double z,
+                        const std::string& frame_id);
+  void add_odometry_tick(int t_idx,
+                         double stamp_sec,
+                         double x, double y, double yaw,
+                         double vx, double wz,
+                         const std::string& frame_id);
 
 private:
   // Helpers
@@ -107,6 +116,7 @@ private:
   void write_costmap_meta_unlocked();
   void write_costmaps_unlocked();
   void write_target_points_unlocked();
+  void write_target_center_points_unlocked();
 
 private:
   mutable std::mutex mtx_;
@@ -120,6 +130,16 @@ private:
   std::optional<Config> cfg_snapshot_;
   std::string base_dir_;             // e.g., "/tmp/dwa_logs"
   std::string run_dir_;              // base_dir_ + "/" + timestamp
+  struct OdomTickSample {
+    int    t_idx{0};
+    double stamp_sec{0.0};
+    double x{0.0}, y{0.0}, yaw{0.0};
+    double vx{0.0}, wz{0.0};
+    std::string frame_id;
+  };
+  std::vector<OdomTickSample> odom_ticks_;
+
+  void write_odometry_unlocked();
 
   // -------- per-run buffers (will be serialized) --------
 
@@ -143,6 +163,7 @@ private:
   std::vector<double> cm_stamps_;               // seconds
   std::vector<std::vector<int16_t>> cm_maps_;   // each is H*W row-major
   std::vector<TargetPoint> target_points_;
+  std::vector<TargetPoint> target_center_points_;
 
   // Diagnostics
   int log_ok_{0};
