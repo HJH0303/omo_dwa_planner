@@ -12,7 +12,7 @@ sensor_msgs/msg/LaserScan
 sensor_msgs/msg/PointCloud2
 ```
 
-It uses odometry data.
+Also, it uses odometry data.
 ```
 nav_msgs/msg/Odometry
 ```
@@ -29,6 +29,8 @@ colcon build
 ```
 ros2 run omo_dwa_planner dwa_node
 ros2 run omo_dwa_planner carrot_node
+or
+ros2 launch omo_dwa_planner omo_dwa_launch.py
 ```
 ## Usage
 You don’t need a global path for testing — you can simply use the carrot node with a defined set of corners.
