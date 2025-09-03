@@ -1,5 +1,5 @@
 # omo_dwa_planner
-DWA local planner ROS2 package for a two-wheeled mobile robot.
+DWA(Dynamic Window Approach) local planner ROS2 package for a two-wheeled mobile robot.
 
 ## Algorithm
 <img width="4002" height="2099" alt="sdw" src="https://github.com/user-attachments/assets/8f8970af-b0a1-41d5-959d-c35dfc57b7c5" />
