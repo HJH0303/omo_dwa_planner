@@ -56,7 +56,11 @@ this->declare_parameter<std::vector<double>>(
 ```
 
 ## Results
-TBD
+
+
+https://github.com/user-attachments/assets/387ff2b3-2a7c-4178-a808-ab4f1f6d332f
+
+
 
 ## References
 [1] Fox, Dieter, Wolfram Burgard, and Sebastian Thrun. "The dynamic window approach to collision avoidance." IEEE robotics & automation magazine 4.1 (2002): 23-33.
